@@ -24,10 +24,8 @@ const (
 	// 默认转发的基础URL
 	defaultBaseURL = "https://generativelanguage.googleapis.com"
 
-	// *** 路径重写规则 ***
-	// 当收到对下面这个路径的请求时...
+	// 路径重写规则
 	sourcePathRewrite = "/v1beta/models"
-	// ...将其重写为下面这个路径再转发
 	targetPathRewrite = "/v1alpha/models"
 )
 
@@ -271,16 +269,11 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// *** 核心改动：根据请求路径决定目标URL，并支持路径重写 ***
 	var targetURL string
-	// 检查请求路径是否为需要重写的特定路径
 	if r.URL.Path == sourcePathRewrite {
-		// 构建新的目标URL，将路径替换为目标路径，并保留原始的查询参数
+		// 构建新的目标URL，只使用目标路径，忽略所有原始的GET参数
 		targetURL = defaultBaseURL + targetPathRewrite
-		if r.URL.RawQuery != "" {
-			targetURL += "?" + r.URL.RawQuery
-		}
-		log.Printf("Path rewritten: %s -> %s. Routing to: %s", r.URL.Path, targetPathRewrite, targetURL)
+		log.Printf("Path rewritten and query stripped: %s -> %s. Routing to: %s", r.URL.Path, targetPathRewrite, targetURL)
 	} else {
 		// 对于所有其他请求，使用默认的基础URL和原始请求URI
 		targetURL = defaultBaseURL + r.URL.String()
@@ -291,10 +284,18 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		Type: "http_request",
 		Payload: map[string]interface{}{
 			"method":  r.Method,
-			"url":     targetURL, // <-- 使用动态决定的targetURL
+			"url":     targetURL,
 			"headers": headers,
 			"body":    string(bodyBytes),
 		},
+	}
+
+	// 以美化的JSON格式打印完整的请求负载，用于调试
+	prettyPayload, err := json.MarshalIndent(requestPayload, "", "  ")
+	if err != nil {
+		log.Printf("!!! Error marshalling payload for logging: %v", err)
+	} else {
+		log.Printf("--- Sending WebSocket Request Payload ---\n%s\n---------------------------------------", string(prettyPayload))
 	}
 
 	if err := selectedConn.safeWriteJSON(requestPayload); err != nil {
@@ -460,13 +461,12 @@ func authenticateHTTPRequest(r *http.Request) (string, error) {
 
 func main() {
 	http.HandleFunc(wsPath, handleWebSocket)
-	// 所有请求都由 handleProxyRequest 处理，内部会进行路径判断和分发
 	http.HandleFunc("/", handleProxyRequest)
 
 	log.Printf("Starting server on %s", proxyListenAddr)
 	log.Printf("WebSocket endpoint available at ws://%s%s", proxyListenAddr, wsPath)
 	log.Printf("HTTP proxy available at http://%s/", proxyListenAddr)
-	log.Printf("Path rewrite rule enabled: %s -> %s", sourcePathRewrite, targetPathRewrite)
+	log.Printf("Path rewrite rule enabled: %s -> %s (Query parameters will be stripped)", sourcePathRewrite, targetPathRewrite)
 
 	if err := http.ListenAndServe(proxyListenAddr, nil); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
