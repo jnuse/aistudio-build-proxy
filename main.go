@@ -271,9 +271,9 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 
 	var targetURL string
 	if r.URL.Path == sourcePathRewrite {
-		// 构建新的目标URL，只使用目标路径，忽略所有原始的GET参数
-		targetURL = defaultBaseURL + targetPathRewrite
-		log.Printf("Path rewritten and query stripped: %s -> %s. Routing to: %s", r.URL.Path, targetPathRewrite, targetURL)
+		// 直接构建目标URL，丢弃所有GET参数，并在末尾添加一个问号
+		targetURL = defaultBaseURL + targetPathRewrite + "?"
+		log.Printf("Path rewritten and query stripped: %s -> %s?. Routing to: %s", r.URL.Path, targetPathRewrite, targetURL)
 	} else {
 		// 对于所有其他请求，使用默认的基础URL和原始请求URI
 		targetURL = defaultBaseURL + r.URL.String()
@@ -290,7 +290,6 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// 以美化的JSON格式打印完整的请求负载，用于调试
 	prettyPayload, err := json.MarshalIndent(requestPayload, "", "  ")
 	if err != nil {
 		log.Printf("!!! Error marshalling payload for logging: %v", err)
@@ -466,7 +465,7 @@ func main() {
 	log.Printf("Starting server on %s", proxyListenAddr)
 	log.Printf("WebSocket endpoint available at ws://%s%s", proxyListenAddr, wsPath)
 	log.Printf("HTTP proxy available at http://%s/", proxyListenAddr)
-	log.Printf("Path rewrite rule enabled: %s -> %s (Query parameters will be stripped)", sourcePathRewrite, targetPathRewrite)
+	log.Printf("Path rewrite rule enabled: %s -> %s (and strips query params)", sourcePathRewrite, targetPathRewrite)
 
 	if err := http.ListenAndServe(proxyListenAddr, nil); err != nil {
 		log.Fatalf("Could not start server: %s\n", err)
