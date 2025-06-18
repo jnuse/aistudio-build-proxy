@@ -244,6 +244,14 @@ func logBurpStyleRequest(r *http.Request, body []byte) {
 }
 
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
+	// 如果是浏览器的 OPTIONS 预检请求，直接响应成功并返回
+	if r.Method == "OPTIONS" {
+		// log.Println("Handled OPTIONS preflight request directly.")
+		applyCORSHeaders(w) // 预检请求也需要CORS头
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading request body early: %v", err)
@@ -283,9 +291,13 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var targetURL string
+	forwardedMethod := r.Method
+	forwardedBody := string(bodyBytes)
 	if r.URL.Path == sourcePathRewrite {
 		targetURL = defaultBaseURL + targetPathRewrite
 		targetURL += "?pageToken="
+		forwardedMethod = http.MethodGet // 使用 net/http 包中的常量更规范
+		forwardedBody = ""
 	} else {
 		targetURL = defaultBaseURL + r.URL.String()
 	}
@@ -294,10 +306,10 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		ID:   reqID,
 		Type: "http_request",
 		Payload: map[string]interface{}{
-			"method":  r.Method,
+			"method":  forwardedMethod,
 			"url":     targetURL,
 			"headers": headers,
-			"body":    string(bodyBytes),
+			"body":    string(forwardedBody),
 		},
 	}
 
@@ -320,6 +332,13 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	processWebSocketResponse(w, r, respChan)
 }
 
+// *** 新增：在最后一刻强制应用CORS响应头的辅助函数 ***
+func applyCORSHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, x-goog-api-key")
+}
+
 func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan chan *WSMessage) {
 	ctx, cancel := context.WithTimeout(r.Context(), proxyRequestTimeout)
 	defer cancel()
@@ -333,6 +352,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 		case msg, ok := <-respChan:
 			if !ok {
 				if !headersSet {
+					applyCORSHeaders(w)
 					http.Error(w, "Internal Server Error: Response channel closed unexpectedly", http.StatusInternalServerError)
 				}
 				return
@@ -344,6 +364,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					return
 				}
 				setResponseHeaders(w, msg.Payload)
+				applyCORSHeaders(w)
 				writeStatusCode(w, msg.Payload)
 				writeBody(w, msg.Payload)
 				return
@@ -353,6 +374,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					continue
 				}
 				setResponseHeaders(w, msg.Payload)
+				applyCORSHeaders(w)
 				writeStatusCode(w, msg.Payload)
 				headersSet = true
 				if flusher != nil {
@@ -361,6 +383,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 			case "stream_chunk":
 				if !headersSet {
 					log.Println("Warning: Received stream_chunk before stream_start. Using default 200 OK.")
+					applyCORSHeaders(w)
 					w.WriteHeader(http.StatusOK)
 					headersSet = true
 				}
@@ -370,6 +393,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 				}
 			case "stream_end":
 				if !headersSet {
+					applyCORSHeaders(w)
 					w.WriteHeader(http.StatusOK)
 				}
 				return
@@ -383,6 +407,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 					if code, ok := msg.Payload["status"].(float64); ok {
 						statusCode = int(code)
 					}
+					applyCORSHeaders(w)
 					http.Error(w, errMsg, statusCode)
 				} else {
 					log.Printf("Error received from client after stream started: %v", msg.Payload)
@@ -394,6 +419,7 @@ func processWebSocketResponse(w http.ResponseWriter, r *http.Request, respChan c
 		case <-ctx.Done():
 			if !headersSet {
 				log.Printf("Gateway Timeout: No response from client for request %s", r.URL.Path)
+				applyCORSHeaders(w)
 				http.Error(w, "Gateway Timeout", http.StatusGatewayTimeout)
 			} else {
 				log.Printf("Gateway Timeout: Stream incomplete for request %s", r.URL.Path)
